@@ -1,0 +1,2 @@
+#!/bin/sh
+exec "$SNAP/bin/node" --inspect=0.0.0.0:9229 "$SNAP/lib/node_modules/m1tfc-rest-server/src/server.js"

@@ -1,0 +1,564 @@
+'use strict';
+
+const express = require('express');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { CommandRunner, getSupportedCommands } = require('./commandRunner');
+const logger = require('./logger');
+
+const port = Number(process.env.PORT || 3300);
+const host = process.env.HOST || '0.0.0.0';
+const defaultCliPath = process.env.M1TFC_CMD || 'm1tfc';
+const defaultCliArgs = process.env.M1TFC_BASE_ARGS
+    ? process.env.M1TFC_BASE_ARGS.split(' ').filter(Boolean)
+    : [];
+const cliCwd = process.env.M1TFC_CWD || process.cwd();
+const snapData = process.env.SNAP_DATA || path.join(os.homedir(), 'snap_data');
+const m1tfcSnapConfigFile = '/var/snap/m1tfc/current/config.json';
+const fallbackConfigFile = path.join(snapData, 'config.json');
+const defaultSnapcraftFile = process.env.SNAPCRAFT_YAML
+    || path.join(process.cwd(), 'snap', 'snapcraft.yaml');
+const sseHeartbeatMs = Number(process.env.LOG_SSE_HEARTBEAT_MS || 15000);
+const testHookReportOnly = process.env.REST_TEST_HOOK === '1';
+const testHookHistory = [];
+
+const VALID_PIN_MODES = new Set(['production', 'debug']);
+const DEFAULT_PASSWORDS = {
+    production: '1223',
+    debug: '4321'
+};
+
+function resolveRuntimeConfigFile() {
+    if (process.env.CONFIG_JSON) return process.env.CONFIG_JSON;
+    if (fs.existsSync(m1tfcSnapConfigFile)) return m1tfcSnapConfigFile;
+    return fallbackConfigFile;
+}
+
+function loadRuntimeConfig() {
+    try {
+        return JSON.parse(fs.readFileSync(resolveRuntimeConfigFile(), 'utf8'));
+    } catch {
+        return {};
+    }
+}
+
+function saveRuntimeConfig(cfg) {
+    const configFile = resolveRuntimeConfigFile();
+    fs.mkdirSync(path.dirname(configFile), { recursive: true });
+    fs.writeFileSync(configFile, `${JSON.stringify(cfg, null, 2)}\n`, 'utf8');
+}
+
+function resolveLogFile() {
+    const cfg = loadRuntimeConfig();
+    const configured = process.env.LOG_FILE
+        || cfg.teensyLogFilename
+        || cfg.logFile
+        || cfg.logFilename
+        || logger.logFile;
+    if (!configured || typeof configured !== 'string' || !configured.trim()) return null;
+    return path.resolve(configured.trim());
+}
+
+function readSnapVersion() {
+    try {
+        const yaml = fs.readFileSync(defaultSnapcraftFile, 'utf8');
+        const match = yaml.match(/^version:\s*['\"]?([^'\"\n]+)['\"]?\s*$/m);
+        return match ? match[1] : 'unknown';
+    } catch {
+        return 'unknown';
+    }
+}
+
+function readFwVersion(cfg) {
+    const configuredVersion = process.env.FW_VERSION
+        || cfg.firmwareVersion
+        || cfg.fwVersion
+        || cfg.flashVersion;
+    if (configuredVersion) return String(configuredVersion);
+
+    if (!cfg.fwDir || typeof cfg.fwDir !== 'string') return 'unknown';
+
+    const mtfDir = cfg.mtfDir || path.join(os.homedir(), 'm1mtf');
+    const versionFile = path.join(mtfDir, cfg.fwDir, 'VERSION');
+    try {
+        const version = fs.readFileSync(versionFile, 'utf8').trim();
+        return version || 'unknown';
+    } catch {
+        return 'unknown';
+    }
+}
+
+function ensureLogFile(logFile) {
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    if (!fs.existsSync(logFile)) fs.writeFileSync(logFile, '', 'utf8');
+}
+
+function tailLogLines(logFile, numLines) {
+    const content = fs.readFileSync(logFile, 'utf8');
+    return content.split('\n').filter(line => line.trim()).slice(-numLines);
+}
+
+function passwordKeyForMode(mode) {
+    return `${mode}Password`;
+}
+
+function verifyPassword(mode, password) {
+    const cfg = loadRuntimeConfig();
+    const configured = cfg[passwordKeyForMode(mode)];
+    const expected = configured === undefined || configured === null
+        ? DEFAULT_PASSWORDS[mode]
+        : String(configured);
+    return password === expected;
+}
+
+function savePassword(mode, password) {
+    const cfg = loadRuntimeConfig();
+    cfg[passwordKeyForMode(mode)] = password;
+    saveRuntimeConfig(cfg);
+}
+
+const commandRunner = new CommandRunner({
+    baseCommand: defaultCliPath,
+    baseArgs: defaultCliArgs,
+    cwd: cliCwd,
+    env: process.env
+});
+
+const app = express();
+app.use(express.json({ limit: '1mb' }));
+
+// Enable CORS for all origins
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+    if (req.method === 'OPTIONS') {
+        res.sendStatus(200);
+    } else {
+        next();
+    }
+});
+
+function normalizeIncomingCommandRequest(body = {}) {
+    return {
+        command: body.command || body.cmd,
+        argument: body.argument || body.arg || body.args
+    };
+}
+
+function createTestHookReport(command, argument) {
+    return {
+        command,
+        args: typeof argument === 'string' ? argument.split(/\s+/).filter(Boolean) : argument,
+        rawArgument: argument
+    };
+}
+
+function writeRdtfResponse(res, command, ok, error, details) {
+    const response = {
+        cmd: command,
+        status: ok,
+        ...(ok ? {} : { error: error || 'Command execution failed' })
+    };
+    if (details && !ok) {
+        response.details = details;
+    }
+    res.status(ok ? 200 : 500).json(response);
+}
+
+app.get('/health', (req, res) => {
+    res.json({
+        status: 'OK',
+        errorCode: 0,
+        ErrorDescription: 'Server is running'
+    });
+});
+
+app.get('/config', (req, res) => {
+    const cfg = loadRuntimeConfig();
+    res.json({
+        status: 'OK',
+        machineName: process.env.MACHINE_NAME || cfg.machineName || 'FC?',
+        vendorSite: process.env.VENDOR_SITE || cfg.vendorSite || '',
+        configFile: resolveRuntimeConfigFile(),
+        logFile: resolveLogFile(),
+        snapVersion: process.env.SNAP_VERSION || cfg.snapVersion || readSnapVersion(),
+        fwVersion: readFwVersion(cfg)
+    });
+});
+
+app.get('/logs/stream', (req, res) => {
+    const logFile = resolveLogFile();
+    if (!logFile) {
+        return res.status(400).json({
+            status: 'FAILED',
+            errorCode: 14,
+            ErrorDescription: 'Log file not configured'
+        });
+    }
+
+    ensureLogFile(logFile);
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+    res.write('retry: 3000\n\n');
+
+    const initialLines = Math.min(Math.max(Number(req.query.lines || 500), 1), 2000);
+    tailLogLines(logFile, initialLines).forEach(line => {
+        res.write(`data: ${JSON.stringify({ line })}\n\n`);
+    });
+
+    let lastSize = fs.statSync(logFile).size;
+    let buffer = '';
+    let watcher;
+
+    const readNewBytes = () => {
+        try {
+            const currentSize = fs.statSync(logFile).size;
+            if (currentSize < lastSize) {
+                lastSize = currentSize;
+                buffer = '';
+                return;
+            }
+            if (currentSize === lastSize) return;
+
+            const fd = fs.openSync(logFile, 'r');
+            const byteCount = currentSize - lastSize;
+            const chunk = Buffer.alloc(byteCount);
+            fs.readSync(fd, chunk, 0, byteCount, lastSize);
+            fs.closeSync(fd);
+
+            buffer += chunk.toString('utf8');
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            lines.forEach(line => {
+                if (line.trim()) res.write(`data: ${JSON.stringify({ line })}\n\n`);
+            });
+            lastSize = currentSize;
+        } catch (err) {
+            // Ignore transient read failures during rotate/truncate windows.
+        }
+    };
+
+    const startWatcher = () => {
+        try {
+            if (watcher) watcher.close();
+            watcher = fs.watch(logFile, (eventType) => {
+                if (eventType === 'change') {
+                    readNewBytes();
+                    return;
+                }
+                if (eventType === 'rename') {
+                    setTimeout(() => {
+                        try {
+                            ensureLogFile(logFile);
+                            lastSize = fs.statSync(logFile).size;
+                            buffer = '';
+                            startWatcher();
+                        } catch {
+                            // Keep stream alive; next rename/change will retry.
+                        }
+                    }, 200);
+                }
+            });
+        } catch {
+            // If watch cannot start, stream still stays open with heartbeat.
+        }
+    };
+
+    startWatcher();
+
+    const heartbeat = setInterval(() => {
+        try {
+            res.write(': heartbeat\n\n');
+        } catch {
+            // Closed by client.
+        }
+    }, sseHeartbeatMs);
+
+    const cleanup = () => {
+        clearInterval(heartbeat);
+        if (watcher) watcher.close();
+    };
+
+    req.on('close', cleanup);
+    res.on('error', cleanup);
+});
+
+app.get('/logs/tail', (req, res) => {
+    const logFile = resolveLogFile();
+    if (!logFile) {
+        return res.status(400).json({
+            status: 'FAILED',
+            errorCode: 14,
+            ErrorDescription: 'Log file not configured'
+        });
+    }
+
+    ensureLogFile(logFile);
+    const maxLines = 2000;
+    const linesReq = Number(req.query.lines || 100);
+    const numLines = Math.min(Math.max(linesReq, 1), maxLines);
+    res.json({
+        status: 'OK',
+        lines: tailLogLines(logFile, numLines)
+    });
+});
+
+app.get('/logs/download', (req, res) => {
+    const logFile = resolveLogFile();
+    if (!logFile) {
+        return res.status(400).json({
+            status: 'FAILED',
+            errorCode: 14,
+            ErrorDescription: 'Log file not configured'
+        });
+    }
+
+    ensureLogFile(logFile);
+    return res.download(logFile, path.basename(logFile));
+});
+
+app.post('/logs/clear', (req, res) => {
+    const logFile = resolveLogFile();
+    if (!logFile) {
+        return res.status(400).json({
+            status: 'FAILED',
+            errorCode: 14,
+            ErrorDescription: 'Log file not configured'
+        });
+    }
+
+    ensureLogFile(logFile);
+    fs.writeFileSync(logFile, `${new Date().toISOString()}\n`, 'utf8');
+    res.json({
+        status: 'OK',
+        errorCode: 0,
+        ErrorDescription: 'Log file cleared'
+    });
+});
+
+app.get('/commands', (req, res) => {
+    res.json({
+        status: 'OK',
+        errorCode: 0,
+        ErrorDescription: 'Supported command list',
+        commands: getSupportedCommands()
+    });
+});
+
+app.get('/test-hook/status', (req, res) => {
+    res.json({
+        enabled: testHookReportOnly,
+        totalReported: testHookHistory.length
+    });
+});
+
+app.get('/test-hook/last-command', (req, res) => {
+    res.json({
+        report: testHookHistory[testHookHistory.length - 1] || null
+    });
+});
+
+app.post('/auth', (req, res) => {
+    const { pin, mode } = req.body || {};
+    if (!mode || typeof mode !== 'string' || !VALID_PIN_MODES.has(mode)) {
+        return res.status(400).json({ status: 'FAILED', ErrorDescription: 'Invalid PIN mode' });
+    }
+    if (!pin || typeof pin !== 'string' || !/^\d{4,6}$/.test(pin)) {
+        return res.status(400).json({ status: 'FAILED', ErrorDescription: 'Invalid PIN format' });
+    }
+    if (verifyPassword(mode, pin)) return res.json({ status: 'OK' });
+    res.status(401).json({ status: 'FAILED', ErrorDescription: 'Wrong password' });
+});
+
+app.post('/changepin', (req, res) => {
+    const { pin, mode } = req.body || {};
+    if (!mode || typeof mode !== 'string' || !VALID_PIN_MODES.has(mode)) {
+        return res.status(400).json({ status: 'FAILED', ErrorDescription: 'Invalid PIN mode' });
+    }
+    if (!pin || typeof pin !== 'string' || !/^\d{4,6}$/.test(pin)) {
+        return res.status(400).json({ status: 'FAILED', ErrorDescription: 'Invalid PIN format' });
+    }
+    try {
+        savePassword(mode, pin);
+        res.json({ status: 'OK' });
+    } catch (err) {
+        logger.error('Failed to save password', { mode, error: err.message });
+        res.status(500).json({ status: 'FAILED', ErrorDescription: 'Failed to save password' });
+    }
+});
+
+async function handleCommandExecution(req, res, source) {
+    const { command, argument } = normalizeIncomingCommandRequest(req.body || {});
+
+    if (!command || typeof command !== 'string') {
+        if (source === 'rdtf') {
+            res.status(400).json({ status: false, error: 'Field "cmd" must be a non-empty string' });
+            return;
+        }
+
+        res.status(400).json({
+            status: 'FAILED',
+            errorCode: 14,
+            ErrorDescription: 'Field "command" must be a non-empty string'
+        });
+        return;
+    }
+
+    if (command === 'help') {
+        const cmds = getSupportedCommands();
+        const helpData = {
+            commands: cmds.join('  '),
+            argument: 'string "--flag val"  |  array ["--flag","val"]  |  object {positional:["val"], flag:"val", boolFlag:true}'
+        };
+        if (source === 'rdtf') {
+            res.status(200).json({ cmd: 'help', status: true, ...helpData });
+            return;
+        }
+        res.status(200).json({ status: 'OK', errorCode: 0, ErrorDescription: 'Help', commands: cmds, ...helpData });
+        return;
+    }
+
+    if (testHookReportOnly) {
+        const report = createTestHookReport(command, argument);
+        testHookHistory.push(report);
+        if (source === 'rdtf') {
+            res.status(200).json({ cmd: command, status: true, report });
+            return;
+        }
+
+        res.status(200).json({
+            status: 'OK',
+            errorCode: 0,
+            ErrorDescription: 'Success',
+            report
+        });
+        return;
+    }
+
+    const result = await commandRunner.run(command, argument);
+    if (source === 'rdtf') {
+        writeRdtfResponse(res, command, result.status === 'OK', result.ErrorDescription, {
+            errorCode: result.errorCode,
+            commandOutput: result.commandOutput
+        });
+        return;
+    }
+
+    res.status(result.status === 'OK' ? 200 : 500).json(result);
+}
+
+async function handleCommandStreamingExecution(req, res) {
+    const { command, argument } = normalizeIncomingCommandRequest(req.body || {});
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+    if (!command || typeof command !== 'string') {
+        res.write(`data: ${JSON.stringify({ error: 'Field "command" must be a non-empty string' })}\n\n`);
+        res.end();
+        return;
+    }
+
+    if (command === 'help') {
+        const cmds = getSupportedCommands();
+        res.write(`data: ${JSON.stringify({ commands: cmds.join('  ') })}\n\n`);
+        res.end();
+        return;
+    }
+
+    await commandRunner.runStream(command, argument, res);
+}
+
+app.get('/help', (req, res) => {
+    res.json({
+        status: 'OK',
+        routes: [
+            { method: 'GET',  path: '/health',              description: 'Server liveness check' },
+            { method: 'GET',  path: '/config',              description: 'Runtime config: machineName, logFile, snapVersion, fwVersion' },
+            { method: 'GET',  path: '/help',                description: 'This help document' },
+            { method: 'GET',  path: '/commands',            description: 'List supported command names' },
+            { method: 'POST', path: '/command',             description: 'Run one command, returns full JSON result' },
+            { method: 'POST', path: '/command/stream',      description: 'Run one command, streams output as SSE' },
+            { method: 'POST', path: '/command/stop',        description: 'Stop the currently running command' },
+            { method: 'POST', path: '/commands/',           description: 'Run one command, returns RDTF-style {cmd, status} response' },
+            { method: 'POST', path: '/auth',                description: 'Verify PIN — body: { pin, mode: "production"|"debug" }' },
+            { method: 'POST', path: '/changepin',           description: 'Change PIN — body: { currentPin, newPin, mode: "production"|"debug" }' },
+            { method: 'GET',  path: '/logs/stream',         description: 'SSE log stream — query: ?lines=<N> (default 500, max 2000)' },
+            { method: 'GET',  path: '/logs/tail',           description: 'Last N log lines — query: ?lines=<N> (default 100, max 2000)' },
+            { method: 'GET',  path: '/logs/download',       description: 'Download full log file' },
+            { method: 'POST', path: '/logs/clear',          description: 'Truncate the log file' }
+        ],
+        commandEndpoint: {
+            path: '/command',
+            method: 'POST',
+            body: {
+                command: `One of: ${getSupportedCommands().join(', ')}`,
+                argument: {
+                    description: 'Optional. Accepted formats:',
+                    string:  '"--flag value --other"',
+                    array:   '["--flag", "value"]',
+                    object:  '{ "positional": ["val"], "flagName": "value", "boolFlag": true }'
+                }
+            }
+        }
+    });
+});
+
+app.post('/command', async (req, res) => {
+    await handleCommandExecution(req, res, 'json');
+});
+
+app.post('/command/stream', async (req, res) => {
+    await handleCommandStreamingExecution(req, res);
+});
+
+app.post('/command/stop', (req, res) => {
+    res.json(commandRunner.cancelCurrent());
+});
+
+app.post('/commands/', async (req, res) => {
+    await handleCommandExecution(req, res, 'rdtf');
+});
+
+app.use((err, req, res, next) => {
+    res.status(500).json({
+        status: 'FAILED',
+        errorCode: 3,
+        ErrorDescription: err && err.message ? err.message : 'Internal server error'
+    });
+});
+
+function startServer() {
+    const server = app.listen(port, host, () => {
+        logger.info(`m1tfc REST server listening on http://${host}:${port}`);
+        logger.info(`CLI command: ${defaultCliPath} ${defaultCliArgs.join(' ')}`.trim());
+        logger.info(`CLI cwd: ${cliCwd}`);
+    });
+
+    server.on('error', (err) => {
+        console.error('Server error:', err.message);
+        logger.error(`Server error: ${err.message}`);
+        process.exit(1);
+    });
+
+    return server;
+}
+
+if (require.main === module) {
+    startServer();
+}
+
+module.exports = {
+    app,
+    startServer
+};
