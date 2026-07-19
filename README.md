@@ -92,7 +92,7 @@ Environment variables:
 - `M1TFC_BASE_ARGS` (default empty)
 - `M1TFC_CWD` (default current working directory)
 - `MACHINE_NAME` (optional machine label shown in GUI)
-- `CONFIG_JSON` (optional path to runtime config JSON; default falls back to `/var/snap/m1tfc/current/config.json`, then this service's snap data `config.json`)
+- `CONFIG_JSON` (optional path to runtime config JSON; default falls back to `/etc/m1platform/config.json`, then this service's snap data `config.json`)
 - `LOG_FILE` (optional absolute/relative log file override)
 - `LOG_SSE_HEARTBEAT_MS` (optional SSE heartbeat interval, default `15000`)
 

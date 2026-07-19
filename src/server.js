@@ -15,7 +15,7 @@ const defaultCliArgs = process.env.M1TFC_BASE_ARGS
     : [];
 const cliCwd = process.env.M1TFC_CWD || process.cwd();
 const snapData = process.env.SNAP_DATA || path.join(os.homedir(), 'snap_data');
-const m1tfcSnapConfigFile = '/var/snap/m1tfc/current/config.json';
+const m1PlatformConfigFile = '/etc/m1platform/config.json';
 const fallbackConfigFile = path.join(snapData, 'config.json');
 const defaultSnapcraftFile = process.env.SNAPCRAFT_YAML
     || path.join(process.cwd(), 'snap', 'snapcraft.yaml');
@@ -31,7 +31,7 @@ const DEFAULT_PASSWORDS = {
 
 function resolveRuntimeConfigFile() {
     if (process.env.CONFIG_JSON) return process.env.CONFIG_JSON;
-    if (fs.existsSync(m1tfcSnapConfigFile)) return m1tfcSnapConfigFile;
+    if (fs.existsSync(m1PlatformConfigFile)) return m1PlatformConfigFile;
     return fallbackConfigFile;
 }
 
