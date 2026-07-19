@@ -93,6 +93,13 @@ function toArgv(argument) {
     return argv;
 }
 
+function withSudo(baseCommand, args) {
+    return {
+        command: 'sudo',
+        args: ['-n', baseCommand, ...args]
+    };
+}
+
 function buildResult(exitCode, stdout, stderr) {
     const parsedOutput = parseJsonStdout(stdout);
     const fallbackStatus = exitCode === 0 ? 'OK' : 'FAILED';
@@ -200,11 +207,12 @@ class CommandRunner {
     execute(command, argument) {
         return new Promise((resolve) => {
             const cmdArgs = [...this.baseArgs, command, ...toArgv(argument)];
+            const sudoCommand = withSudo(this.baseCommand, cmdArgs);
             
             // Log environment context for debugging
             logger.info('Executing command with environment', {
-                command: this.baseCommand,
-                args: cmdArgs,
+                command: sudoCommand.command,
+                args: sudoCommand.args,
                 cwd: this.cwd,
                 PATH: this.env.PATH,
                 SNAP_DATA: this.env.SNAP_DATA,
@@ -214,7 +222,7 @@ class CommandRunner {
                 NODE_ENV: this.env.NODE_ENV
             });
 
-            const child = this.spawnImpl(this.baseCommand, cmdArgs, {
+            const child = this.spawnImpl(sudoCommand.command, sudoCommand.args, {
                 cwd: this.cwd,
                 env: this.env,
                 shell: false
@@ -266,8 +274,8 @@ class CommandRunner {
                 const result = wasStopped ? stoppedResult() : buildResult(exitCode, stdout, stderr);
                 if (exitCode !== 0 && !wasStopped) {
                     logger.error(`Command exited with code ${exitCode}`, {
-                        command: this.baseCommand,
-                        args: cmdArgs,
+                        command: sudoCommand.command,
+                        args: sudoCommand.args,
                         cwd: this.cwd,
                         stderr: stderr.substring(0, 200)
                     });
@@ -307,13 +315,14 @@ class CommandRunner {
     executeStream(command, argument, res) {
         return new Promise((resolve) => {
             const cmdArgs = [...this.baseArgs, command, ...toArgv(argument)];
+            const sudoCommand = withSudo(this.baseCommand, cmdArgs);
 
             logger.info('Executing command (stream)', {
-                command: this.baseCommand,
-                args: cmdArgs
+                command: sudoCommand.command,
+                args: sudoCommand.args
             });
 
-            const child = this.spawnImpl(this.baseCommand, cmdArgs, {
+            const child = this.spawnImpl(sudoCommand.command, sudoCommand.args, {
                 cwd: this.cwd,
                 env: this.env,
                 shell: false

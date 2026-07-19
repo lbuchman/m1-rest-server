@@ -72,8 +72,8 @@ test('run forwards arguments and merges JSON stdout into the response', async ()
 
     const result = await resultPromise;
 
-    assert.equal(captured.command, 'node');
-    assert.deepEqual(captured.args, ['-e', 'mock', 'm1cmd', 'alpha', 'beta', '-c', 'hello world', '-v']);
+    assert.equal(captured.command, 'sudo');
+    assert.deepEqual(captured.args, ['-n', 'node', '-e', 'mock', 'm1cmd', 'alpha', 'beta', '-c', 'hello world', '-v']);
     assert.deepEqual(captured.options, {
         cwd: 'C:/temp',
         env: { TEST_ENV: '1' },
@@ -95,8 +95,9 @@ test('run defaults to the m1tfc executable', async () => {
     const child = createMockChild();
     const captured = {};
     const runner = new CommandRunner({
-        spawnImpl: (command) => {
+        spawnImpl: (command, args) => {
             captured.command = command;
+            captured.args = args;
             return child;
         }
     });
@@ -105,7 +106,8 @@ test('run defaults to the m1tfc executable', async () => {
     await nextTick();
     child.emit('close', 0);
 
-    assert.equal(captured.command, 'm1tfc');
+    assert.equal(captured.command, 'sudo');
+    assert.deepEqual(captured.args, ['-n', 'm1tfc', 'm1cmd']);
     assert.equal((await resultPromise).status, 'OK');
 });
 
@@ -135,7 +137,7 @@ test('run serializes command execution', async () => {
 
     const runner = new CommandRunner({
         spawnImpl: (command, args) => {
-            started.push(args[0]);
+            started.push(args[2]);
             return children[started.length - 1];
         }
     });
@@ -167,7 +169,7 @@ test('runStream waits for an active command before starting', async () => {
 
     const runner = new CommandRunner({
         spawnImpl: (command, args) => {
-            started.push(args[0]);
+            started.push(args[2]);
             return children[started.length - 1];
         }
     });
