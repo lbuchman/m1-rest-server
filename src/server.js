@@ -4,6 +4,7 @@ const express = require('express');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execSync } = require('child_process');
 const { CommandRunner, getSupportedCommands } = require('./commandRunner');
 const logger = require('./logger');
 
@@ -19,6 +20,8 @@ const m1PlatformConfigFile = '/etc/m1platform/config.json';
 const fallbackConfigFile = path.join(snapData, 'config.json');
 const defaultSnapcraftFile = process.env.SNAPCRAFT_YAML
     || path.join(process.cwd(), 'snap', 'snapcraft.yaml');
+const defaultTfcroncliSnapcraftFile = process.env.TFCRONCLI_SNAPCRAFT_YAML
+    || path.resolve(process.cwd(), '../tfcroncli/snap/snapcraft.yaml');
 const sseHeartbeatMs = Number(process.env.LOG_SSE_HEARTBEAT_MS || 15000);
 const testHookReportOnly = process.env.REST_TEST_HOOK === '1';
 const testHookHistory = [];
@@ -87,6 +90,59 @@ function readFwVersion(cfg) {
     } catch {
         return 'unknown';
     }
+}
+
+function readStm32mp1FwVersion(cfg) {
+    const configuredVersion = process.env.STM32MP1_FW_VERSION
+        || cfg.stm32mp1FW
+        || cfg.stm32mp1Fw
+        || cfg.stm32FwVersion;
+    if (configuredVersion) return String(configuredVersion);
+
+    const mtfDir = cfg.mtfDir || path.join(os.homedir(), 'm1mtf');
+    const revisionFile = path.join(mtfDir, 'stm32mp1_rev');
+    try {
+        const version = fs.readFileSync(revisionFile, 'utf8').trim();
+        return version || 'unknown';
+    } catch {
+        return 'unknown';
+    }
+}
+
+function readTfcroncliVersion(cfg) {
+    const configuredVersion = process.env.TFCRONCLI_VERSION
+        || cfg.tfcroncliVersion
+        || cfg.tfcronVersion;
+    if (configuredVersion) return String(configuredVersion);
+
+    // Production path: derive version from installed m1client snap metadata.
+    try {
+        const output = execSync('snap list m1client', {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore']
+        });
+        const lines = output.split('\n').map(line => line.trim()).filter(Boolean);
+        if (lines.length >= 2) {
+            const cols = lines[1].split(/\s+/);
+            const snapVersion = cols[1];
+            const snapRevision = cols[2];
+            if (snapVersion && snapRevision) return `${snapVersion} (${snapRevision})`;
+            if (snapVersion) return snapVersion;
+        }
+    } catch {
+        // Fall through to source/dev fallback.
+    }
+
+    // Dev/source fallback: read from tfcroncli snapcraft.yaml in workspace.
+    try {
+        const yaml = fs.readFileSync(defaultTfcroncliSnapcraftFile, 'utf8');
+        const match = yaml.match(/^version:\s*['\"]?([^'\"\n]+)['\"]?\s*$/m);
+        if (match && match[1]) return match[1];
+    } catch {
+        // Fall through to unknown.
+    }
+
+    return 'unknown';
 }
 
 function ensureLogFile(logFile) {
@@ -184,7 +240,9 @@ app.get('/config', (req, res) => {
         configFile: resolveRuntimeConfigFile(),
         logFile: resolveLogFile(),
         snapVersion: process.env.SNAP_VERSION || cfg.snapVersion || readSnapVersion(),
-        fwVersion: readFwVersion(cfg)
+        fwVersion: readFwVersion(cfg),
+        stm32mp1FW: readStm32mp1FwVersion(cfg),
+        tfcroncliVersion: readTfcroncliVersion(cfg)
     });
 });
 
