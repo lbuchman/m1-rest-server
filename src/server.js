@@ -369,6 +369,14 @@ app.get('/logs/tail', (req, res) => {
 });
 
 app.get('/logs/download', (req, res) => {
+    if (commandRunner.currentChild) {
+        return res.status(409).json({
+            status: 'FAILED',
+            errorCode: 15,
+            ErrorDescription: 'Log download is only available while idle (no command running)'
+        });
+    }
+
     const logFile = resolveLogFile();
     if (!logFile) {
         return res.status(400).json({
@@ -379,7 +387,12 @@ app.get('/logs/download', (req, res) => {
     }
 
     ensureLogFile(logFile);
-    return res.download(logFile, path.basename(logFile));
+    const rawSerial = String(req.query.serial || '').trim();
+    const safeSerial = rawSerial.replace(/[^A-Za-z0-9_-]/g, '');
+    const downloadName = safeSerial
+        ? `${safeSerial}${path.extname(logFile)}`
+        : path.basename(logFile);
+    return res.download(logFile, downloadName);
 });
 
 app.post('/logs/clear', (req, res) => {
