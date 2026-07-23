@@ -145,6 +145,21 @@ function readTfcroncliVersion(cfg) {
     return 'unknown';
 }
 
+async function readBoardIdFromFirmware() {
+    try {
+        const result = await commandRunner.run('m1tbcmd', { command: 'getfwrev' });
+        const output = result && result.commandOutput && typeof result.commandOutput === 'object'
+            ? result.commandOutput
+            : null;
+        if (!output || output.boardId === undefined || output.boardId === null) {
+            return 'unknown';
+        }
+        return String(output.boardId);
+    } catch {
+        return 'unknown';
+    }
+}
+
 function ensureLogFile(logFile) {
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
     if (!fs.existsSync(logFile)) fs.writeFileSync(logFile, '', 'utf8');
@@ -231,8 +246,9 @@ app.get('/health', (req, res) => {
     });
 });
 
-app.get('/config', (req, res) => {
+app.get('/config', async (req, res) => {
     const cfg = loadRuntimeConfig();
+    const boardId = await readBoardIdFromFirmware();
     res.json({
         status: 'OK',
         machineName: process.env.MACHINE_NAME || cfg.machineName || 'FC?',
@@ -242,7 +258,8 @@ app.get('/config', (req, res) => {
         snapVersion: process.env.SNAP_VERSION || cfg.snapVersion || readSnapVersion(),
         fwVersion: readFwVersion(cfg),
         stm32mp1FW: readStm32mp1FwVersion(cfg),
-        tfcroncliVersion: readTfcroncliVersion(cfg)
+        tfcroncliVersion: readTfcroncliVersion(cfg),
+        boardId
     });
 });
 
