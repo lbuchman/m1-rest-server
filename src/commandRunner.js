@@ -9,6 +9,7 @@ const supportedCommands = new Set([
     'm1tbcmd',
     'm1cmd',
     'mnpcmd',
+    'reboot',
     'ict',
     'eeprom',
     'progmac',
@@ -152,6 +153,20 @@ function stoppedResult() {
     };
 }
 
+function normalizeCommand(command, argument) {
+    if (command === 'reboot') {
+        return {
+            command: 'm1cmd',
+            argument: { command: 'reboot' }
+        };
+    }
+
+    return {
+        command,
+        argument
+    };
+}
+
 class CommandRunner {
     constructor(options = {}) {
         this.baseCommand = options.baseCommand || 'm1tfc';
@@ -181,7 +196,8 @@ class CommandRunner {
             });
         }
 
-        return this.enqueue(() => this.execute(command, argument || ''));
+        const normalized = normalizeCommand(command, argument || '');
+        return this.enqueue(() => this.execute(normalized.command, normalized.argument || ''));
     }
 
     cancelCurrent() {
@@ -309,7 +325,8 @@ class CommandRunner {
                 commandOutput: null
             });
         }
-        return this.enqueue(() => this.executeStream(command, argument || '', res));
+        const normalized = normalizeCommand(command, argument || '');
+        return this.enqueue(() => this.executeStream(normalized.command, normalized.argument || '', res));
     }
 
     executeStream(command, argument, res) {
