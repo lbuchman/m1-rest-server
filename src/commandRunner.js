@@ -19,7 +19,8 @@ const supportedCommands = new Set([
     'functest',
     'makelabel',
     'power',
-    'poe'
+    'poe',
+    'flashteensy'
 ]);
 
 function getSupportedCommands() {
