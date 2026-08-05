@@ -160,6 +160,43 @@ async function readBoardIdFromFirmware() {
     }
 }
 
+function readM1tfcSnapVersion() {
+    try {
+        const output = execSync('snap list m1tfc', {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore']
+        });
+        const lines = output.split('\n').map(line => line.trim()).filter(Boolean);
+        if (lines.length >= 2) {
+            const cols = lines[1].split(/\s+/);
+            const snapRevision = cols[2];
+            if (snapRevision) return snapRevision;
+        }
+    } catch {
+        // Fall through to unknown
+    }
+    return 'unknown';
+}
+
+async function readFirmwareRevisions() {
+    try {
+        const result = await commandRunner.run('fwrevision');
+        if (result && result.status === 'OK' && result.commandOutput) {
+            const output = result.commandOutput;
+            return {
+                m1tb: output.m1tb || null,
+                acm: output.acm || null
+            };
+        }
+    } catch {
+        // Fall through to return nulls
+    }
+    return {
+        m1tb: null,
+        acm: null
+    };
+}
+
 function ensureLogFile(logFile) {
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
     if (!fs.existsSync(logFile)) fs.writeFileSync(logFile, '', 'utf8');
@@ -248,7 +285,7 @@ app.get('/health', (req, res) => {
 
 app.get('/config', async (req, res) => {
     const cfg = loadRuntimeConfig();
-    const boardId = await readBoardIdFromFirmware();
+    const fwRevisions = await readFirmwareRevisions();
     res.json({
         status: 'OK',
         machineName: process.env.MACHINE_NAME || cfg.machineName || 'FC?',
@@ -256,10 +293,12 @@ app.get('/config', async (req, res) => {
         configFile: resolveRuntimeConfigFile(),
         logFile: resolveLogFile(),
         snapVersion: process.env.SNAP_VERSION || cfg.snapVersion || readSnapVersion(),
+        m1tfcSnapVersion: readM1tfcSnapVersion(),
         fwVersion: readFwVersion(cfg),
         stm32mp1FW: readStm32mp1FwVersion(cfg),
         tfcroncliVersion: readTfcroncliVersion(cfg),
-        boardId
+        m1tb: fwRevisions.m1tb,
+        acm: fwRevisions.acm
     });
 });
 

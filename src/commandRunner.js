@@ -20,7 +20,8 @@ const supportedCommands = new Set([
     'makelabel',
     'power',
     'poe',
-    'flashteensy'
+    'flashteensy',
+    'fwrevision'
 ]);
 
 function getSupportedCommands() {
