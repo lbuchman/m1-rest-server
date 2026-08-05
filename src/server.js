@@ -65,6 +65,21 @@ function resolveLogFile() {
 
 function readSnapVersion() {
     try {
+        const output = execSync('snap list gui-react', {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore']
+        });
+        const lines = output.split('\n').map(line => line.trim()).filter(Boolean);
+        if (lines.length >= 2) {
+            const cols = lines[1].split(/\s+/);
+            const snapVersion = cols[1];
+            if (snapVersion) return snapVersion;
+        }
+    } catch {
+        // Fall through to source/dev fallback.
+    }
+
+    try {
         const yaml = fs.readFileSync(defaultSnapcraftFile, 'utf8');
         const match = yaml.match(/^version:\s*['\"]?([^'\"\n]+)['\"]?\s*$/m);
         return match ? match[1] : 'unknown';
@@ -185,7 +200,8 @@ async function readFirmwareRevisions() {
             const output = result.commandOutput;
             return {
                 m1tb: output.m1tb || null,
-                acm: output.acm || null
+                acm: output.acm || null,
+                m1: output.m1 || null
             };
         }
     } catch {
@@ -193,7 +209,8 @@ async function readFirmwareRevisions() {
     }
     return {
         m1tb: null,
-        acm: null
+        acm: null,
+        m1: null
     };
 }
 
@@ -286,6 +303,7 @@ app.get('/health', (req, res) => {
 app.get('/config', async (req, res) => {
     const cfg = loadRuntimeConfig();
     const fwRevisions = await readFirmwareRevisions();
+    const m1FwRev = fwRevisions.m1 && fwRevisions.m1.status ? fwRevisions.m1.fw : null;
     res.json({
         status: 'OK',
         machineName: process.env.MACHINE_NAME || cfg.machineName || 'FC?',
@@ -295,7 +313,7 @@ app.get('/config', async (req, res) => {
         snapVersion: process.env.SNAP_VERSION || cfg.snapVersion || readSnapVersion(),
         m1tfcSnapVersion: readM1tfcSnapVersion(),
         fwVersion: readFwVersion(cfg),
-        stm32mp1FW: readStm32mp1FwVersion(cfg),
+        stm32mp1FW: m1FwRev || readStm32mp1FwVersion(cfg),
         tfcroncliVersion: readTfcroncliVersion(cfg),
         m1tb: fwRevisions.m1tb,
         acm: fwRevisions.acm
