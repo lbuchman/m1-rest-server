@@ -1,6 +1,6 @@
 name: m1tfc-rest-server
 base: core22
-version: '0.1.0'
+adopt-info: version
 summary: REST server wrapper for m1tfc commands
 description: |
   Standalone REST server that executes m1tfc CLI commands in a separate process
@@ -33,6 +33,15 @@ apps:
       PATH: /snap/bin:$PATH
 
 parts:
+  # scripts/build.sh writes .fw_rev with the git short commit hash before
+  # `snapcraft pack`; the build environment doesn't inherit host env vars,
+  # so version is read from that file instead.
+  version:
+    plugin: nil
+    source: .
+    override-pull: |
+      craftctl default
+      craftctl set version="$(cat .fw_rev 2>/dev/null || echo devbuild)"
   rest-server:
     plugin: npm
     source: .
