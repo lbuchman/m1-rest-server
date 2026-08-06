@@ -58,9 +58,9 @@ function resolveLogFile() {
     return path.resolve(configured.trim());
 }
 
-function readSnapVersion() {
+function readInstalledSnapVersion(snapName) {
     try {
-        const output = execSync('snap list gui-react', {
+        const output = execSync(`snap list ${snapName}`, {
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'ignore']
         });
@@ -71,8 +71,15 @@ function readSnapVersion() {
             if (snapVersion) return snapVersion;
         }
     } catch {
-        // Fall through to source/dev fallback.
+        // Fall through to unknown.
     }
+
+    return null;
+}
+
+function readUiSnapVersion() {
+    const installedVersion = readInstalledSnapVersion('gui-react');
+    if (installedVersion) return installedVersion;
 
     try {
         const yaml = fs.readFileSync(defaultSnapcraftFile, 'utf8');
@@ -81,6 +88,69 @@ function readSnapVersion() {
     } catch {
         return 'unknown';
     }
+}
+
+function readRestServerSnapVersion(cfg) {
+    const configuredVersion = process.env.SNAP_VERSION
+        || cfg.restServerSnapVersion
+        || cfg.snapVersion;
+    if (configuredVersion) return String(configuredVersion);
+
+    const installedVersion = readInstalledSnapVersion('m1tfc-rest-server');
+    return installedVersion || 'unknown';
+}
+
+function readFixtureAgentSnapVersion(cfg) {
+    const configuredVersion = process.env.M1_FIXTURE_AGENT_VERSION
+        || cfg.m1FixtureAgentSnapVersion
+        || cfg.fixtureAgentSnapVersion;
+    if (configuredVersion) return String(configuredVersion);
+
+    const installedVersion = readInstalledSnapVersion('m1-fixture-agent');
+    return installedVersion || 'unknown';
+}
+
+function readM1tfcSnapVersion() {
+    const installedVersion = readInstalledSnapVersion('m1tfc');
+    if (installedVersion) return installedVersion;
+
+    return 'unknown';
+}
+
+function readTfcroncliVersion(cfg) {
+    const configuredVersion = process.env.TFCRONCLI_VERSION
+        || cfg.tfcroncliVersion
+        || cfg.tfcronVersion;
+    if (configuredVersion) return String(configuredVersion);
+
+    // Production path: derive version from installed m1client snap metadata.
+    try {
+        const output = execSync('snap list m1client', {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore']
+        });
+        const lines = output.split('\n').map(line => line.trim()).filter(Boolean);
+        if (lines.length >= 2) {
+            const cols = lines[1].split(/\s+/);
+            const snapVersion = cols[1];
+            const snapRevision = cols[2];
+            if (snapVersion && snapRevision) return `${snapVersion} (${snapRevision})`;
+            if (snapVersion) return snapVersion;
+        }
+    } catch {
+        // Fall through to source/dev fallback.
+    }
+
+    try {
+        // Dev/source fallback: read from tfcroncli snapcraft.yaml in workspace.
+        const yaml = fs.readFileSync(defaultTfcroncliSnapcraftFile, 'utf8');
+        const match = yaml.match(/^version:\s*['\"]?([^'\"\n]+)['\"]?\s*$/m);
+        if (match && match[1]) return match[1];
+    } catch {
+        // Fall through to unknown.
+    }
+
+    return 'unknown';
 }
 
 function readFwVersion(cfg) {
@@ -119,42 +189,6 @@ function readStm32mp1FwVersion(cfg) {
     }
 }
 
-function readTfcroncliVersion(cfg) {
-    const configuredVersion = process.env.TFCRONCLI_VERSION
-        || cfg.tfcroncliVersion
-        || cfg.tfcronVersion;
-    if (configuredVersion) return String(configuredVersion);
-
-    // Production path: derive version from installed m1client snap metadata.
-    try {
-        const output = execSync('snap list m1client', {
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'ignore']
-        });
-        const lines = output.split('\n').map(line => line.trim()).filter(Boolean);
-        if (lines.length >= 2) {
-            const cols = lines[1].split(/\s+/);
-            const snapVersion = cols[1];
-            const snapRevision = cols[2];
-            if (snapVersion && snapRevision) return `${snapVersion} (${snapRevision})`;
-            if (snapVersion) return snapVersion;
-        }
-    } catch {
-        // Fall through to source/dev fallback.
-    }
-
-    // Dev/source fallback: read from tfcroncli snapcraft.yaml in workspace.
-    try {
-        const yaml = fs.readFileSync(defaultTfcroncliSnapcraftFile, 'utf8');
-        const match = yaml.match(/^version:\s*['\"]?([^'\"\n]+)['\"]?\s*$/m);
-        if (match && match[1]) return match[1];
-    } catch {
-        // Fall through to unknown.
-    }
-
-    return 'unknown';
-}
-
 async function readBoardIdFromFirmware() {
     try {
         const result = await commandRunner.run('m1tbcmd', { command: 'getfwrev' });
@@ -168,24 +202,6 @@ async function readBoardIdFromFirmware() {
     } catch {
         return 'unknown';
     }
-}
-
-function readM1tfcSnapVersion() {
-    try {
-        const output = execSync('snap list m1tfc', {
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'ignore']
-        });
-        const lines = output.split('\n').map(line => line.trim()).filter(Boolean);
-        if (lines.length >= 2) {
-            const cols = lines[1].split(/\s+/);
-            const snapVersion = cols[1];
-            if (snapVersion) return snapVersion;
-        }
-    } catch {
-        // Fall through to unknown
-    }
-    return 'unknown';
 }
 
 async function readFirmwareRevisions() {
@@ -297,14 +313,19 @@ app.get('/config', async (req, res) => {
     const cfg = loadRuntimeConfig();
     const fwRevisions = await readFirmwareRevisions();
     const m1FwRev = fwRevisions.m1 && fwRevisions.m1.status ? fwRevisions.m1.fw : null;
+    const uiSnapVersion = readUiSnapVersion();
+    const restServerSnapVersion = readRestServerSnapVersion(cfg);
     res.json({
         status: 'OK',
         machineName: process.env.MACHINE_NAME || cfg.machineName || 'FC?',
         vendorSite: process.env.VENDOR_SITE || cfg.vendorSite || '',
         configFile: resolveRuntimeConfigFile(),
         logFile: resolveLogFile(),
-        snapVersion: process.env.SNAP_VERSION || cfg.snapVersion || readSnapVersion(),
+        snapVersion: restServerSnapVersion,
+        uiSnapVersion,
+        restServerSnapVersion,
         m1tfcSnapVersion: readM1tfcSnapVersion(),
+        m1FixtureAgentSnapVersion: readFixtureAgentSnapVersion(cfg),
         fwVersion: readFwVersion(cfg),
         stm32mp1FW: m1FwRev || readStm32mp1FwVersion(cfg),
         tfcroncliVersion: readTfcroncliVersion(cfg),
@@ -528,7 +549,7 @@ app.get('/help', (req, res) => {
         status: 'OK',
         routes: [
             { method: 'GET',  path: '/health',              description: 'Server liveness check' },
-            { method: 'GET',  path: '/config',              description: 'Runtime config: machineName, logFile, snapVersion, fwVersion' },
+            { method: 'GET',  path: '/config',              description: 'Runtime config: machineName, logFile, uiSnapVersion, restServerSnapVersion, m1FixtureAgentSnapVersion, fwVersion' },
             { method: 'GET',  path: '/help',                description: 'This help document' },
             { method: 'GET',  path: '/commands',            description: 'List supported command names' },
             { method: 'POST', path: '/command',             description: 'Run one command, returns full JSON result' },
