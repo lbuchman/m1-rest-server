@@ -30,6 +30,58 @@ function getSupportedCommands() {
 
 
 
+function extractEmbeddedJson(text) {
+    // m1tfc now logs its JSON result through winston (e.g. "... debug:     {"),
+    // so the JSON object is embedded inside a noisy multi-line log stream
+    // instead of being the last clean stdout line. Brace-match to pull it out,
+    // keeping the largest (outermost) valid object rather than a nested one.
+    let bestMatch = null;
+    let bestLength = -1;
+
+    for (let i = 0; i < text.length; i += 1) {
+        if (text[i] !== '{') continue;
+
+        let depth = 0;
+        let inString = false;
+        let escape = false;
+
+        for (let j = i; j < text.length; j += 1) {
+            const ch = text[j];
+
+            if (inString) {
+                if (escape) escape = false;
+                else if (ch === '\\') escape = true;
+                else if (ch === '"') inString = false;
+                continue;
+            }
+
+            if (ch === '"') {
+                inString = true;
+                continue;
+            }
+            if (ch === '{') depth += 1;
+            else if (ch === '}') {
+                depth -= 1;
+                if (depth === 0) {
+                    const span = j + 1 - i;
+                    if (span > bestLength) {
+                        try {
+                            bestMatch = JSON.parse(text.slice(i, j + 1));
+                            bestLength = span;
+                        }
+                        catch (err) {
+                            // not valid JSON, keep scanning
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    return bestMatch;
+}
+
 function parseJsonStdout(stdout) {
     if (!stdout) return null;
 
@@ -57,7 +109,7 @@ function parseJsonStdout(stdout) {
         }
     }
 
-    return null;
+    return extractEmbeddedJson(trimmed);
 }
 
 function flagFor(key) {
