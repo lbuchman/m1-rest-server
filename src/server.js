@@ -184,8 +184,8 @@ function readM1tfcSnapVersion() {
         const lines = output.split('\n').map(line => line.trim()).filter(Boolean);
         if (lines.length >= 2) {
             const cols = lines[1].split(/\s+/);
-            const snapRevision = cols[2];
-            if (snapRevision) return snapRevision;
+            const snapVersion = cols[1];
+            if (snapVersion) return snapVersion;
         }
     } catch {
         // Fall through to unknown
