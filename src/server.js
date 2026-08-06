@@ -27,10 +27,6 @@ const testHookReportOnly = process.env.REST_TEST_HOOK === '1';
 const testHookHistory = [];
 
 const VALID_PIN_MODES = new Set(['production', 'debug']);
-const DEFAULT_PASSWORDS = {
-    production: '1223',
-    debug: '4321'
-};
 
 function resolveRuntimeConfigFile() {
     if (process.env.CONFIG_JSON) return process.env.CONFIG_JSON;
@@ -231,10 +227,8 @@ function passwordKeyForMode(mode) {
 function verifyPassword(mode, password) {
     const cfg = loadRuntimeConfig();
     const configured = cfg[passwordKeyForMode(mode)];
-    const expected = configured === undefined || configured === null
-        ? DEFAULT_PASSWORDS[mode]
-        : String(configured);
-    return password === expected;
+    if (configured === undefined || configured === null) return false;
+    return password === String(configured);
 }
 
 function savePassword(mode, password) {
