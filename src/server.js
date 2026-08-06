@@ -22,7 +22,6 @@ const defaultSnapcraftFile = process.env.SNAPCRAFT_YAML
     || path.join(process.cwd(), 'snap', 'snapcraft.yaml');
 const defaultTfcroncliSnapcraftFile = process.env.TFCRONCLI_SNAPCRAFT_YAML
     || path.resolve(process.cwd(), '../tfcroncli/snap/snapcraft.yaml');
-const sseHeartbeatMs = Number(process.env.LOG_SSE_HEARTBEAT_MS || 15000);
 const testHookReportOnly = process.env.REST_TEST_HOOK === '1';
 const testHookHistory = [];
 
@@ -191,7 +190,7 @@ function readM1tfcSnapVersion() {
 
 async function readFirmwareRevisions() {
     try {
-        const result = await commandRunner.run('fwrevision');
+        const result = await commandRunner.run('fwrevision', '-d 2');
         if (result && result.status === 'OK' && result.commandOutput) {
             const output = result.commandOutput;
             return {
@@ -315,105 +314,11 @@ app.get('/config', async (req, res) => {
 });
 
 app.get('/logs/stream', (req, res) => {
-    const logFile = resolveLogFile();
-    if (!logFile) {
-        return res.status(400).json({
-            status: 'FAILED',
-            errorCode: 14,
-            ErrorDescription: 'Log file not configured'
-        });
-    }
-
-    ensureLogFile(logFile);
-
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    if (typeof res.flushHeaders === 'function') res.flushHeaders();
-
-    res.write('retry: 3000\n\n');
-
-    const initialLines = Math.min(Math.max(Number(req.query.lines || 500), 1), 2000);
-    tailLogLines(logFile, initialLines).forEach(line => {
-        res.write(`data: ${JSON.stringify({ line })}\n\n`);
+    res.status(410).json({
+        status: 'FAILED',
+        errorCode: 14,
+        ErrorDescription: 'Log SSE stream is disabled. Use /command/stream for command output.'
     });
-
-    let lastSize = fs.statSync(logFile).size;
-    let buffer = '';
-    let watcher;
-
-    const readNewBytes = () => {
-        try {
-            const currentSize = fs.statSync(logFile).size;
-            if (currentSize < lastSize) {
-                lastSize = currentSize;
-                buffer = '';
-                return;
-            }
-            if (currentSize === lastSize) return;
-
-            const fd = fs.openSync(logFile, 'r');
-            const byteCount = currentSize - lastSize;
-            const chunk = Buffer.alloc(byteCount);
-            fs.readSync(fd, chunk, 0, byteCount, lastSize);
-            fs.closeSync(fd);
-
-            buffer += chunk.toString('utf8');
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-            lines.forEach(line => {
-                if (line.trim()) res.write(`data: ${JSON.stringify({ line })}\n\n`);
-            });
-            lastSize = currentSize;
-        } catch (err) {
-            // Ignore transient read failures during rotate/truncate windows.
-        }
-    };
-
-    const startWatcher = () => {
-        try {
-            if (watcher) watcher.close();
-            watcher = fs.watch(logFile, (eventType) => {
-                if (eventType === 'change') {
-                    readNewBytes();
-                    return;
-                }
-                if (eventType === 'rename') {
-                    setTimeout(() => {
-                        try {
-                            ensureLogFile(logFile);
-                            lastSize = fs.statSync(logFile).size;
-                            buffer = '';
-                            startWatcher();
-                        } catch {
-                            // Keep stream alive; next rename/change will retry.
-                        }
-                    }, 200);
-                }
-            });
-        } catch {
-            // If watch cannot start, stream still stays open with heartbeat.
-        }
-    };
-
-    startWatcher();
-
-    const heartbeat = setInterval(() => {
-        try {
-            res.write(': heartbeat\n\n');
-        } catch {
-            // Closed by client.
-        }
-    }, sseHeartbeatMs);
-
-    const cleanup = () => {
-        clearInterval(heartbeat);
-        if (watcher) watcher.close();
-    };
-
-    req.on('close', cleanup);
-    res.on('error', cleanup);
 });
 
 app.get('/logs/tail', (req, res) => {
@@ -632,7 +537,7 @@ app.get('/help', (req, res) => {
             { method: 'POST', path: '/commands/',           description: 'Run one command, returns RDTF-style {cmd, status} response' },
             { method: 'POST', path: '/auth',                description: 'Verify PIN — body: { pin, mode: "production"|"debug" }' },
             { method: 'POST', path: '/changepin',           description: 'Change PIN — body: { currentPin, newPin, mode: "production"|"debug" }' },
-            { method: 'GET',  path: '/logs/stream',         description: 'SSE log stream — query: ?lines=<N> (default 500, max 2000)' },
+            { method: 'GET',  path: '/logs/stream',         description: 'Disabled; use /command/stream for command output streaming' },
             { method: 'GET',  path: '/logs/tail',           description: 'Last N log lines — query: ?lines=<N> (default 100, max 2000)' },
             { method: 'GET',  path: '/logs/download',       description: 'Download full log file' },
             { method: 'POST', path: '/logs/clear',          description: 'Truncate the log file' }

@@ -111,6 +111,27 @@ test('run defaults to the m1tfc executable', async () => {
     assert.equal((await resultPromise).status, 'OK');
 });
 
+test('run injects mandatory -d 2 for fwrevision', async () => {
+    const child = createMockChild();
+    const captured = {};
+    const runner = new CommandRunner({
+        spawnImpl: (command, args) => {
+            captured.command = command;
+            captured.args = args;
+            return child;
+        }
+    });
+
+    const resultPromise = runner.run('fwrevision');
+    await nextTick();
+    child.stdout.emit('data', Buffer.from('{"status":"OK","errorCode":0,"ErrorDescription":"Success"}\n'));
+    child.emit('close', 0);
+
+    assert.equal(captured.command, 'sudo');
+    assert.deepEqual(captured.args, ['-n', 'm1tfc', 'fwrevision', '-d', '2']);
+    assert.equal((await resultPromise).status, 'OK');
+});
+
 test('run falls back to stderr text when the exit code is unknown', async () => {
     const child = createMockChild();
 
@@ -219,6 +240,40 @@ test('runStream preserves lines split across process output chunks', async () =>
         { stream: 'stdout', line: 'second line' },
         { stream: 'done', result }
     ]);
+});
+
+test('runStream suppresses fwrevision output lines but still returns done result', async () => {
+    const child = createMockChild();
+    const captured = {};
+    const events = [];
+    const response = {
+        write(event) {
+            events.push(event);
+        },
+        end() {}
+    };
+    const runner = new CommandRunner({
+        spawnImpl: (command, args) => {
+            captured.command = command;
+            captured.args = args;
+            return child;
+        }
+    });
+
+    const resultPromise = runner.runStream('fwrevision', '', response);
+    await nextTick();
+    child.stdout.emit('data', Buffer.from('device info line\n'));
+    child.stdout.emit('data', Buffer.from('{"status":"OK","errorCode":0,"ErrorDescription":"Success","m1tb":"revA"}\n'));
+    child.stderr.emit('data', Buffer.from('stderr note\n'));
+    child.emit('close', 0);
+
+    const result = await resultPromise;
+    const payloads = events.map(event => JSON.parse(event.slice(6)));
+
+    assert.equal(captured.command, 'sudo');
+    assert.deepEqual(captured.args, ['-n', 'm1tfc', 'fwrevision', '-d', '2']);
+    assert.equal(result.status, 'OK');
+    assert.deepEqual(payloads, [{ stream: 'done', result }]);
 });
 
 test('runStream terminates the child process when the response closes', async () => {

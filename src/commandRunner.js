@@ -169,6 +169,22 @@ function normalizeCommand(command, argument) {
     };
 }
 
+function ensureFwrevisionDeviceArg(argv) {
+    const hasDeviceArg = argv.some((arg, idx) => {
+        if (arg === '-d' || arg === '--d') return true;
+        if (/^-d\d+$/.test(arg)) return true;
+        return idx > 0 && argv[idx - 1] === '--d';
+    });
+    if (hasDeviceArg) return argv;
+    return ['-d', '2', ...argv];
+}
+
+function commandArgv(command, argument) {
+    const argv = toArgv(argument);
+    if (command === 'fwrevision') return ensureFwrevisionDeviceArg(argv);
+    return argv;
+}
+
 class CommandRunner {
     constructor(options = {}) {
         this.baseCommand = options.baseCommand || 'm1tfc';
@@ -224,7 +240,7 @@ class CommandRunner {
 
     execute(command, argument) {
         return new Promise((resolve) => {
-            const cmdArgs = [...this.baseArgs, command, ...toArgv(argument)];
+            const cmdArgs = [...this.baseArgs, command, ...commandArgv(command, argument)];
             const sudoCommand = withSudo(this.baseCommand, cmdArgs);
             
             // Log environment context for debugging
@@ -333,8 +349,9 @@ class CommandRunner {
 
     executeStream(command, argument, res) {
         return new Promise((resolve) => {
-            const cmdArgs = [...this.baseArgs, command, ...toArgv(argument)];
+            const cmdArgs = [...this.baseArgs, command, ...commandArgv(command, argument)];
             const sudoCommand = withSudo(this.baseCommand, cmdArgs);
+            const suppressLineStreaming = command === 'fwrevision';
 
             logger.info('Executing command (stream)', {
                 command: sudoCommand.command,
@@ -360,7 +377,7 @@ class CommandRunner {
                 let pending = '';
 
                 const writeLine = (line) => {
-                    if (line.trim()) {
+                    if (line.trim() && !suppressLineStreaming) {
                         res.write(`data: ${JSON.stringify({ stream, line })}\n\n`);
                     }
                 };
