@@ -7,3 +7,4 @@ npm-debug.log*
 parts/
 prime/
 stage/
+.fw_rev
